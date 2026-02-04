@@ -1,232 +1,51 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>九巴到站 PRO</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        .eta-card { animation: fadeIn 0.3s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        input[type="search"] { -webkit-appearance: none; border-radius: 12px; }
-    </style>
-</head>
-<body class="bg-slate-50 text-slate-900 pb-12">
-
-    <header class="bg-red-600 text-white p-4 sticky top-0 shadow-lg z-30">
-        <div class="max-w-md mx-auto space-y-3">
-            <div class="flex justify-between items-center">
-                <h1 class="text-xl font-bold tracking-tight">KMB 實時到站</h1>
-                <button onclick="getLocation()" class="bg-white text-red-600 text-xs px-4 py-2 rounded-full font-bold shadow-sm active:scale-95 transition-all">📍 附近車站</button>
-            </div>
-            <div class="relative">
-                <input type="search" id="searchInput" placeholder="搜尋車站 (例如: 尖沙咀, 968)..." 
-                    class="w-full p-3 pl-4 rounded-xl text-slate-900 text-sm border-none outline-none shadow-inner focus:ring-2 focus:ring-red-300">
-            </div>
-        </div>
-    </header>
-
-    <main class="p-4 max-w-md mx-auto">
-        <div id="status" class="text-center text-[10px] text-slate-400 mb-4 tracking-widest uppercase font-medium">系統準備中...</div>
+async function fetchETA(stopId) {
+    const box = document.getElementById(`eta-container-${stopId}`);
+    try {
+        // 加入時間戳防止 iPhone 讀取舊的快取資料
+        const resp = await fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${stopId}?t=${Date.now()}`);
+        const json = await resp.json();
         
-        <div id="loader" class="hidden text-center py-6">
-            <div class="animate-spin inline-block w-6 h-6 border-4 border-red-500 border-t-transparent rounded-full"></div>
-        </div>
+        const routes = {};
+        // 1. 先按路線編號排序，確保不同裝置顯示順序一致
+        const sortedData = json.data.sort((a, b) => a.route.localeCompare(b.route, undefined, {numeric: true}));
 
-        <div id="stop-list" class="space-y-4"></div>
-    </main>
-
-    <script>
-        const DB_NAME = "KMB_DB_V2";
-        const STORE_NAME = "stops";
-        let db = null;
-        let activeStopIds = [];
-        let autoRefreshTimer = null;
-
-        function initDB() {
-            return new Promise((resolve, reject) => {
-                const request = indexedDB.open(DB_NAME, 1);
-                request.onupgradeneeded = e => {
-                    const db = e.target.result;
-                    if (!db.objectStoreNames.contains(STORE_NAME)) {
-                        db.createObjectStore(STORE_NAME, { keyPath: "stop" });
-                    }
-                };
-                request.onsuccess = e => { db = e.target.result; resolve(db); };
-                request.onerror = e => reject("DB Error");
-            });
-        }
-
-        window.onload = async () => {
-            try {
-                await initDB();
-                await checkAndDownloadData();
-                setupSearch();
-            } catch (err) {
-                document.getElementById('status').innerText = "啟動失敗: " + err;
+        sortedData.forEach(item => {
+            if (!item.eta) return; // 沒時間的不顯示
+            if (!routes[item.route]) routes[item.route] = [];
+            // 每個路線最多顯示 3 班
+            if (routes[item.route].length < 3) {
+                routes[item.route].push(item);
             }
-        };
+        });
 
-        async function checkAndDownloadData() {
-            const lastUpdate = localStorage.getItem('kmb_last_update');
-            const now = Date.now();
-            const ONE_DAY = 24 * 60 * 60 * 1000;
+        const html = Object.values(routes).map(bus => {
+            // 確保同一個路線的班次是按時間先後排列
+            bus.sort((a, b) => new Date(a.eta) - new Date(b.eta));
 
-            if (!lastUpdate || (now - lastUpdate > ONE_DAY)) {
-                document.getElementById('status').innerText = "正在同步離線車站資料 (2MB)...";
-                try {
-                    const resp = await fetch("https://data.etabus.gov.hk/v1/transport/kmb/stop");
-                    const json = await resp.json();
-                    
-                    const tx = db.transaction(STORE_NAME, "readwrite");
-                    const store = tx.objectStore(STORE_NAME);
-                    await store.clear();
-                    json.data.forEach(s => store.put(s));
-                    
-                    localStorage.setItem('kmb_last_update', now);
-                    document.getElementById('status').innerText = "資料同步完成";
-                } catch (e) {
-                    document.getElementById('status').innerText = "網絡異常，使用舊資料";
-                }
-            } else {
-                document.getElementById('status').innerText = "離線緩存模式 (每 24h 更新)";
-            }
-        }
-
-        function setupSearch() {
-            let timeout = null;
-            document.getElementById('searchInput').addEventListener('input', (e) => {
-                clearTimeout(timeout);
-                const query = e.target.value.trim().toUpperCase();
-                if (query.length < 2) {
-                    document.getElementById('stop-list').innerHTML = '';
-                    return;
-                }
-                timeout = setTimeout(() => execSearch(query), 400);
-            });
-        }
-
-        async function execSearch(query) {
-            document.getElementById('loader').classList.remove('hidden');
-            const tx = db.transaction(STORE_NAME, "readonly");
-            const store = tx.objectStore(STORE_NAME);
-            const results = [];
-
-            store.openCursor().onsuccess = (e) => {
-                const cursor = e.target.result;
-                if (cursor) {
-                    const s = cursor.value;
-                    if (s.name_tc.includes(query) || s.name_en.toUpperCase().includes(query)) {
-                        results.push(s);
-                    }
-                    if (results.length < 10) cursor.continue();
-                    else finalizeSearch(results);
-                } else {
-                    finalizeSearch(results);
-                }
-            };
-        }
-
-        function finalizeSearch(results) {
-            document.getElementById('loader').classList.add('hidden');
-            renderStops(results, false);
-        }
-
-        function getLocation() {
-            document.getElementById('loader').classList.remove('hidden');
-            navigator.geolocation.getCurrentPosition(async (pos) => {
-                const tx = db.transaction(STORE_NAME, "readonly");
-                const store = tx.objectStore(STORE_NAME);
-                let list = [];
-                const lat = pos.coords.latitude;
-                const lon = pos.coords.longitude;
-
-                store.openCursor().onsuccess = (e) => {
-                    const cursor = e.target.result;
-                    if (cursor) {
-                        const s = cursor.value;
-                        const d = Math.sqrt((s.lat-lat)**2 + (s.long-lon)**2);
-                        list.push({...s, d});
-                        cursor.continue();
-                    } else {
-                        list.sort((a,b) => a.d - b.d);
-                        document.getElementById('loader').classList.add('hidden');
-                        renderStops(list.slice(0, 3), true);
-                    }
-                };
-            }, () => { alert("請開啟 GPS 權限"); document.getElementById('loader').classList.add('hidden'); });
-        }
-
-        function renderStops(stops, isGPS) {
-            const container = document.getElementById('stop-list');
-            container.innerHTML = '';
-            activeStopIds = stops.map(s => s.stop);
-
-            stops.forEach(stop => {
-                const card = document.createElement('div');
-                card.className = "eta-card bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden";
-                card.innerHTML = `
-                    <div class="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-                        <div class="truncate">
-                            <h2 class="font-bold text-slate-800 text-sm">${stop.name_tc}</h2>
-                            <p class="text-[10px] text-slate-400 uppercase tracking-tighter">${stop.name_en}</p>
-                        </div>
-                        <div class="text-[9px] font-bold text-red-500 bg-red-50 px-2 py-1 rounded">LIVE</div>
+            return `
+                <div class="flex justify-between items-center py-2 px-2 border-b border-slate-50 last:border-0">
+                    <div class="flex items-center gap-2">
+                        <span class="bg-slate-800 text-white font-black px-2 py-0.5 rounded text-[11px] min-w-[3.5rem] text-center">${bus[0].route}</span>
+                        <span class="text-[11px] text-slate-500 truncate w-24">往${bus[0].dest_tc}</span>
                     </div>
-                    <div id="eta-container-${stop.stop}" class="p-2 min-h-[40px]">
-                        <div class="flex justify-center py-2"><div class="animate-pulse h-2 w-20 bg-slate-200 rounded"></div></div>
+                    <div class="flex items-center text-sm gap-1">
+                        ${bus.map(b => {
+                            const etaTime = new Date(b.eta).getTime();
+                            const nowTime = Date.now();
+                            let m = Math.floor((etaTime - nowTime) / 60000);
+                            if (isNaN(m)) return `<span class="text-slate-300 text-[10px]">--</span>`;
+                            m = Math.max(0, m);
+                            const color = m <= 5 ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold';
+                            return `<span class="${color}">${m}<small class="text-[9px] font-normal">分</small></span>`;
+                        }).join('<span class="text-slate-200">|</span>')}
                     </div>
-                `;
-                container.appendChild(card);
-                fetchETA(stop.stop);
-            });
+                </div>
+            `;
+        }).join('');
 
-            if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-            autoRefreshTimer = setInterval(() => {
-                activeStopIds.forEach(id => fetchETA(id));
-            }, 30000);
-        }
-
-        async function fetchETA(stopId) {
-            const box = document.getElementById(`eta-container-${stopId}`);
-            try {
-                const resp = await fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${stopId}`);
-                const json = await resp.json();
-                
-                const routes = {};
-                json.data.forEach(item => {
-                    if (!routes[item.route]) routes[item.route] = [];
-                    if (routes[item.route].length < 3) routes[item.route].push(item);
-                });
-
-                const html = Object.values(routes).map(bus => `
-                    <div class="flex justify-between items-center py-2 px-2 border-b border-slate-50 last:border-0">
-                        <div class="flex items-center gap-2">
-                            <span class="bg-slate-800 text-white font-black px-2 py-0.5 rounded text-[11px] min-w-[3rem] text-center">${bus[0].route}</span>
-                            <span class="text-[11px] text-slate-500 truncate w-24">往${bus[0].dest_tc}</span>
-                        </div>
-                        <div class="flex items-center text-sm">
-                            ${bus.map(b => {
-                                // 修正 iPhone WebKit 解析 Date 的相容性問題
-                                const etaTime = new Date(b.eta).getTime();
-                                const nowTime = Date.now();
-                                let m = Math.floor((etaTime - nowTime) / 60000);
-                                
-                                // 處理 NaN 或 負數
-                                if (isNaN(m)) return `<span class="text-slate-300 text-[11px]">--</span>`;
-                                m = Math.max(0, m);
-                                
-                                const color = m <= 5 ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold';
-                                return `<span class="${color}">${m}<small class="text-[10px] font-normal">分</small></span>`;
-                            }).join('<span class="text-slate-200 px-1">|</span>')}
-                        </div>
-                    </div>
-                `).join('');
-
-                box.innerHTML = html || '<p class="text-xs text-center text-slate-300 py-2">暫無班次</p>';
-                document.getElementById('status').innerText = `最後更新: ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}`;
-            } catch (e) { box.innerHTML = '<p class="text-[10px] text-red-300">連線超時</p>'; }
-        }
-    </script>
-</body>
-</html>
+        box.innerHTML = html || '<p class="text-xs text-center text-slate-300 py-2">暫無班次</p>';
+    } catch (e) { 
+        console.error(e);
+        box.innerHTML = '<p class="text-[10px] text-red-300 text-center">連線中斷</p>'; 
+    }
+}
