@@ -154,7 +154,7 @@
                     } else {
                         list.sort((a,b) => a.d - b.d);
                         document.getElementById('loader').classList.add('hidden');
-                        renderStops(list.slice(0, 3), true);
+                        renderStops(list.slice(0, 6), true);
                     }
                 };
             }, () => { alert("請開啟 GPS 權限"); document.getElementById('loader').classList.add('hidden'); });
@@ -205,7 +205,7 @@
             if (!item.eta) return; // 沒時間的不顯示
             if (!routes[item.route]) routes[item.route] = [];
             // 每個路線最多顯示 3 班
-            if (routes[item.route].length < 6) {
+            if (routes[item.route].length < 3) {
                 routes[item.route].push(item);
             }
         });
@@ -245,3 +245,4 @@
 </body>
 
 </html>
+
