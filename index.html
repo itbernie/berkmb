@@ -205,7 +205,7 @@
             if (!item.eta) return; // 沒時間的不顯示
             if (!routes[item.route]) routes[item.route] = [];
             // 每個路線最多顯示 3 班
-            if (routes[item.route].length < 3) {
+            if (routes[item.route].length < 6) {
                 routes[item.route].push(item);
             }
         });
@@ -243,4 +243,5 @@
 }        
     </script>
 </body>
+
 </html>
